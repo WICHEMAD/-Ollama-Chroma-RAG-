@@ -1,5 +1,5 @@
 from typing import List, Dict, Optional
-from app.models.ollama_client import OllamaClient
+from app.models.ollama_client import OllamaClient, get_ollama_client
 
 
 class ConversationMemory:
@@ -20,7 +20,7 @@ class ConversationMemory:
         self.messages: List[Dict] = []  # 存储最近几轮原始对话
         self.summary: str = ""  # 早期对话的摘要
         self.max_token_limit = max_token_limit
-        self.llm_client = llm_client or OllamaClient()
+        self.llm_client = llm_client or get_ollama_client()
 
     def add_user_message(self, text: str) -> None:
         """

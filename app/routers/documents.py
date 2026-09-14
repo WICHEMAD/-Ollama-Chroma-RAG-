@@ -1,12 +1,9 @@
 """文档管理路由"""
 import os
 from fastapi import APIRouter, File, UploadFile, HTTPException, status
-from ..document.loader import DocumentLoader  # 改为实际的文档加载器
 from ..document.service import DocumentService
-from ..vectordb.chroma_store import ChromaStore  # 改为实际的向量存储
-# 在文件开头导入
-# 修改后
-from app.vectordb.chroma_store import ChromaStore
+from ..vectordb.chroma_store import ChromaStore  # /stats、/list 接口用
+
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 ALLOWED_CONTENT_TYPES = {"application/pdf", "text/plain"}
@@ -29,21 +26,24 @@ async def upload_document(file: UploadFile = File(...)):
         with open(file_path, "wb") as buffer:
             buffer.write(await file.read())
 
-        # ✅ 创建文档加载器实例并处理
-        loader = DocumentLoader()
-        documents = loader.load(file_path)
+        # 走统一入库流程：加载 → 去重 → 切分 → 入库
+        result = DocumentService().process_and_store(file_path)
 
-        # ✅ 创建向量存储实例并入库
-        store = ChromaStore()
+        if result["status"] == "duplicate":
+            return {
+                "status": "duplicate",
+                "filename": file.filename,
+                "skipped": True,
+                "content_hash": result["content_hash"],
+            }
 
-        # 修改后
-        chunks = store.add_documents(documents)
         return {
             "status": "success",
             "filename": file.filename,
-            "original_pages": 1,  # 或者从文档中获取
-            "chunks_count": len(chunks),
-            "stored_count": len(chunks)
+            "content_hash": result["content_hash"],
+            "original_pages": result["original_pages"],
+            "chunks_count": result["chunks_created"],
+            "stored_count": result["chunks_created"],
         }
 
     except Exception as e:
@@ -80,3 +80,16 @@ async def get_document_stats():
         return stats
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取统计信息失败: {str(e)}")
+
+
+@router.get("/list")
+async def list_documents():
+    """
+    获取知识库文档列表（按文件聚合）
+    """
+    try:
+        store = ChromaStore()
+        documents = store.list_documents()
+        return {"documents": documents}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取文档列表失败: {str(e)}")

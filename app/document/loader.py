@@ -1,12 +1,7 @@
 import os
 from typing import List
-from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_core.documents import Document
 from pathlib import Path
-class DocumentLoader:
-    from pathlib import Path
-    from typing import List
-    from langchain_core.documents import Document
 
 class DocumentLoader:
     """文档加载器类，根据文件后缀自动选择解析方式"""
@@ -34,13 +29,8 @@ class DocumentLoader:
     def _load_pdf(self, file_path: str) -> List[Document]:
         """
         解析 PDF 文件（使用 PyPDFLoader）
-
-        Args:
-            file_path: PDF 文件路径
-
-        Returns:
-            List[Document]: 每页一个 Document 对象
         """
+        from langchain_community.document_loaders import PyPDFLoader
         loader = PyPDFLoader(file_path)
         return loader.load()
 
@@ -48,13 +38,8 @@ class DocumentLoader:
     def _load_txt(self, file_path: str) -> List[Document]:
         """
         解析 TXT 文件（使用 TextLoader）
-
-        Args:
-            file_path: TXT 文件路径
-
-        Returns:
-            List[Document]: 包含单个 Document 对象的列表
         """
+        from langchain_community.document_loaders import TextLoader
         loader = TextLoader(file_path, encoding="utf-8")
         return loader.load()
 
@@ -68,4 +53,3 @@ if __name__ == "__main__":
     target_file=root_dir/"data"/"陈冠霖优化版2.pdf"
     docs = loader.load(str(target_file))
     print(docs)
-

@@ -1,9 +1,11 @@
 from typing import List, Dict, Generator, Optional
 from langchain_core.documents import Document
 from app.rag.retriever import Retriever, get_retriever
-from app.models.ollama_client import OllamaClient
+from app.models.ollama_client import OllamaClient, get_ollama_client, get_chat_client
+from app.config import config
 import re
 from app.rag.memory import ConversationMemory, get_memory
+from app.rag.query_rewriter import QueryRewriter, get_query_rewriter
 class RAGChain:
     """
     RAG 问答链
@@ -20,8 +22,9 @@ class RAGChain:
             llm_client: LLM 客户端实例（可选，默认创建）
         """
         self.retriever = retriever or get_retriever()
-        self.llm_client = llm_client or OllamaClient()
+        self.llm_client = llm_client or get_ollama_client()
         self.memory=memory or get_memory()
+        self.query_rewriter = get_query_rewriter()
     def _build_context(self, docs: List[Document]) -> str:
         """
         将文档列表拼接成格式化的上下文字符串
@@ -134,12 +137,17 @@ class RAGChain:
 
         return sources
 
-    def answer(self, question: str, history: Optional[List[dict]] = None) -> Dict:
+    def answer(self, question: str, history: Optional[List[dict]] = None, model: Optional[str] = None) -> Dict:
         """
         获取完整回答
         """
-        # 1. 检索相关文档
-        docs = self.retriever.retrieve(question)
+        # 1. 改写查询（检索用改写后的 query，回答仍用原始 question）
+        search_query = self.query_rewriter.rewrite(question, history, config.QUERY_REWRITE_MODEL)
+        if search_query != question:
+            print(f"DEBUG: 改写查询: {question!r} -> {search_query!r}")
+
+        # 2. 检索相关文档
+        docs = self.retriever.retrieve(search_query)
         print(f"DEBUG: 检索到 {len(docs)} 个文档")
 
         # ✅ 添加这部分调试代码
@@ -166,8 +174,18 @@ class RAGChain:
         # 3. 构建消息列表
         messages = self._build_messages(question, context, history)
 
-        # 4. 调用 LLM
-        answer = self.llm_client.chat(messages)
+        # 4. 调用 LLM（云端优先；云端失败回退本地兜底模型）
+        llm_client = get_chat_client(model)
+        fallback = False
+        try:
+            answer = llm_client.chat(messages)
+        except Exception as e:
+            if model:
+                fallback = True
+                print(f"[chain] 云端模型调用失败，回退本地模型: {e}")
+                answer = get_ollama_client().chat(messages)
+            else:
+                raise
 
         # 5. 提取来源信息
         sources = self._extract_sources(answer, docs)
@@ -175,10 +193,12 @@ class RAGChain:
         return {
             "answer": answer,
             "sources": sources,
-            "context_length": len(docs)
+            "context_length": len(docs),
+            "rewritten_query": search_query,
+            "fallback": fallback
         }
 
-    def answer_stream(self, question: str, history: Optional[List[dict]] = None) -> Generator[str, None, None]:
+    def answer_stream(self, question: str, history: Optional[List[dict]] = None, model: Optional[str] = None):
         """
         流式获取回答
 
@@ -187,13 +207,17 @@ class RAGChain:
             history: 历史对话记录（可选）
 
         Yields:
-            str: 逐块的回答内容
+            str: 逐块的回答内容；最后 yield 一个 dict（来源元数据）
         """
-        # 1. 检索相关文档
-        docs = self.retriever.retrieve(question)
+        # 1. 改写查询（检索用改写后的 query，回答仍用原始 question）
+        search_query = self.query_rewriter.rewrite(question, history, config.QUERY_REWRITE_MODEL)
+
+        # 2. 检索相关文档
+        docs = self.retriever.retrieve(search_query)
 
         if not docs:
             yield "根据已有文档无法回答"
+            yield {"type": "sources", "sources": [], "context_length": 0, "rewritten_query": search_query, "fallback": False}
             return
 
         # 2. 构建上下文
@@ -202,13 +226,31 @@ class RAGChain:
         # 3. 构建消息列表
         messages = self._build_messages(question, context, history)
 
-        # 4. 流式调用 LLM
-        for chunk in self.llm_client.chat_stream(messages):
-            yield chunk
+        # 4. 流式调用 LLM（云端优先；云端在首个 chunk 前失败则回退本地）
+        llm_client = get_chat_client(model)
+        answer_parts = []
+        fallback = False
+        first = True
+        try:
+            for chunk in llm_client.chat_stream(messages):
+                first = False
+                answer_parts.append(chunk)
+                yield chunk
+        except Exception as e:
+            if model and first:
+                fallback = True
+                print(f"[chain] 云端模型调用失败，回退本地模型: {e}")
+                for chunk in get_ollama_client().chat_stream(messages):
+                    answer_parts.append(chunk)
+                    yield chunk
+            else:
+                raise
 
-# 创建单例实例供外部调用
-rag_chain = RAGChain()
-# 创建全局单例
+        full_answer = "".join(answer_parts)
+        sources = self._extract_sources(full_answer, docs)
+        yield {"type": "sources", "sources": sources, "context_length": len(docs), "rewritten_query": search_query, "fallback": fallback}
+
+# 全局单例（懒加载，不在模块导入时实例化）
 _rag_chain_instance = None
 
 

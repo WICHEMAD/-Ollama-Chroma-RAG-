@@ -34,7 +34,8 @@ vector_db/
 database/
 
 # 模型文件（大文件不上传）
-models/
+# 注意：只锚定根目录 /models/，避免误伤 app/models/ 源码目录
+/models/
 *.gguf
 *.bin
 model_cache/
@@ -55,6 +56,9 @@ logs/
 .env.local
 .env.*.local
 
+# 外部模型配置（含 API Key，勿提交）
+models.json
+
 # 系统文件
 .DS_Store
 Thumbs.db
@@ -67,3 +71,15 @@ desktop.ini
 # 测试文件
 test_*.py
 sda.ipynb
+
+# Claude Code 本地配置
+.claude/
+
+# 上传目录（用户上传的测试文件）
+static/upload/
+
+# 评测脚本与测试集数据（不上传）
+eval/
+
+# 内部文档（技术方案 / 开发文档，不上传）
+docs/

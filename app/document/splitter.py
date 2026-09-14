@@ -1,9 +1,6 @@
 from pathlib import Path
 from typing import List
-from app.document.loader import DocumentLoader
-from charset_normalizer.utils import is_separator
 from langchain_core.documents import Document
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from app.config import config
 
@@ -16,6 +13,7 @@ def sqlit_document(
 
     chunk_size = chunk_size or config.CHUNK_SIZE
     chunk_overlap = chunk_overlap or config.CHUNK_OVERLAP
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
     sqlitter=RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,

@@ -1,16 +1,19 @@
+import hashlib
+import time
 from pathlib import Path
 from typing import List
 from langchain_core.documents import Document
 from app.document.loader import DocumentLoader
 from app.document.splitter import sqlit_document
 from app.vectordb.chroma_store import ChromaStore
+from app.rag.sparse_retriever import invalidate_bm25_index
 
 
 class DocumentService:
     """
     文档服务类
 
-    提供文档的完整处理流程：加载 → 切分 → 入库
+    提供文档的完整处理流程：加载 → 切分 → 去重 → 入库
     """
 
     def __init__(self):
@@ -20,29 +23,45 @@ class DocumentService:
 
     def process_and_store(self, file_path: str) -> dict:
         """
-        完整流程：加载文档 → 切分 → 入库
+        完整流程：加载文档 → 内容哈希去重 → 切分 → 入库
 
         Args:
             file_path: 文件路径（支持 .pdf 和 .txt）
 
         Returns:
-            dict: 处理结果包含文档ID列表和统计信息
+            dict: 处理结果包含文档ID列表和统计信息；重复时返回 status="duplicate"
         """
         # 1. 加载文档
         docs = self.loader.load(file_path)
 
-        # 2. 切分文档
+        # 2. 内容哈希去重（先于切分，命中直接返回）
+        full_text = "".join(doc.page_content for doc in docs)
+        content_hash = hashlib.md5(full_text.encode("utf-8")).hexdigest()
+        if self.store.has_content_hash(content_hash):
+            return {"file_path": file_path, "status": "duplicate", "content_hash": content_hash}
+
+        # 3. 切分文档
         chunks = sqlit_document(docs)
 
-        # 3. 入库
+        # 4. 给每个 chunk 打 metadata
+        uploaded_at = int(time.time())
+        for doc in chunks:
+            doc.metadata["content_hash"] = content_hash
+            doc.metadata["uploaded_at"] = uploaded_at
+
+        # 5. 入库
         doc_ids = self.store.add_documents(chunks)
 
-        # 4. 返回结果
+        # 6. 失效 BM25 索引（下次混合检索时懒重建）
+        invalidate_bm25_index()
+
+        # 7. 返回结果
         return {
             "file_path": file_path,
             "original_pages": len(docs),
             "chunks_created": len(chunks),
             "document_ids": doc_ids,
+            "content_hash": content_hash,
             "status": "success"
         }
 
@@ -81,6 +100,7 @@ class DocumentService:
         """
         try:
             self.store.delete_by_filter({"source": file_path})
+            invalidate_bm25_index()
             return {
                 "file_path": file_path,
                 "status": "success",

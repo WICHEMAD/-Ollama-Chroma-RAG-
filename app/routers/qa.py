@@ -2,27 +2,31 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional, Dict
-from app.rag.chain import rag_chain
-from app.agent.agent_executor import get_agent_executor
+from app.rag.chain import get_rag_chain as _get_rag_chain
+from app.agent.agent_executor import get_agent_executor as _get_agent_executor
 router = APIRouter(prefix="/qa", tags=["qa"])
 
 # 请求模型
 class QuestionRequest(BaseModel):
     question: str
     history: Optional[List[Dict[str, str]]] = None  # ✅ 使用明确的类型
+    model: Optional[str] = None  # 可选：指定对话模型（缺省走默认配置）
+    thread_id: Optional[str] = None  # Agent 会话 id（多轮记忆用，普通问答忽略）
 
 # 响应模型
 class QuestionResponse(BaseModel):
     answer: str
     sources: List[Dict] = []
     context_length: int = 0
+    rewritten_query: Optional[str] = None
+    fallback: bool = False
 
 # 延迟导入避免循环依赖
 def get_rag_chain():
-    return rag_chain
+    return _get_rag_chain()
 
-def get_agent_executor():
-    return get_agent_executor()
+def get_agent_executor(model_name=None):
+    return _get_agent_executor(model_name)
 
 @router.post("/ask", response_model=QuestionResponse)
 async def ask_question(request: QuestionRequest):
@@ -59,7 +63,7 @@ async def ask_question(request: QuestionRequest):
         print(f"DEBUG - 问题: {request.question}")
         print(f"DEBUG - 历史记录: {history}")
 
-        result = rag_chain.answer(request.question, history)
+        result = rag_chain.answer(request.question, history, request.model)
 
         print(f"DEBUG - 结果: {result}")
 
@@ -67,7 +71,9 @@ async def ask_question(request: QuestionRequest):
         return QuestionResponse(
             answer=result.get("answer", "根据已有文档无法回答"),
             sources=result.get("sources", []),
-            context_length=result.get("context_length", 0)
+            context_length=result.get("context_length", 0),
+            rewritten_query=result.get("rewritten_query"),
+            fallback=result.get("fallback", False)
         )
 
     except Exception as e:
@@ -98,9 +104,18 @@ async def stream_question(request: QuestionRequest):
         rag_chain = get_rag_chain()
 
         async def generate_stream():
-            for chunk in rag_chain.answer_stream(request.question, history):
-                yield f"data: {json.dumps({'chunk': chunk})}\n\n"
-            yield "data: [DONE]\n\n"
+            try:
+                for item in rag_chain.answer_stream(request.question, history, request.model):
+                    if isinstance(item, str):
+                        yield f"data: {json.dumps({'chunk': item})}\n\n"
+                    else:
+                        # 来源元数据 dict（含 sources / context_length / rewritten_query）
+                        yield f"data: {json.dumps(item)}\n\n"
+            except Exception as e:
+                print(f"ERROR - 流式生成异常: {str(e)}")
+                yield f"data: {json.dumps({'type': 'error', 'detail': str(e)})}\n\n"
+            finally:
+                yield "data: [DONE]\n\n"
 
         return StreamingResponse(generate_stream(), media_type="text/event-stream")
 
@@ -126,12 +141,12 @@ async def ask_agent(request: QuestionRequest):
         if not request.question or not request.question.strip():
             raise ValueError("问题不能为空")
 
-        # 2. 获取 Agent 执行器
-        agent = get_agent_executor()
+        # 2. 获取 Agent 执行器（按所选模型）
+        agent = get_agent_executor(request.model)
 
         # 3. 调用 Agent（只传递 question，history 可后续扩展）
         print(f"DEBUG - Agent 问题: {request.question}")
-        answer = agent.run_agent(request.question)
+        answer = agent.run_agent(request.question, request.thread_id or "default")
 
         print(f"DEBUG - Agent 结果: {answer}")
 
@@ -139,7 +154,8 @@ async def ask_agent(request: QuestionRequest):
         return QuestionResponse(
             answer=answer,
             sources=[],  # 后续可从 Agent 输出中解析来源
-            context_length=0
+            context_length=0,
+            fallback=agent.last_fallback
         )
 
     except Exception as e:

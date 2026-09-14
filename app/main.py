@@ -1,7 +1,10 @@
 """RAG 问答系统后端入口"""
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routers import documents, qa
+from fastapi.staticfiles import StaticFiles
+from app.routers import documents, qa, models
 
 # 创建 FastAPI 实例
 app = FastAPI(
@@ -24,10 +27,11 @@ app.add_middleware(
 # 注册路由
 app.include_router(documents.router)
 app.include_router(qa.router)
+app.include_router(models.router)
 
-# 根路径健康检查
-@app.get("/", tags=["健康检查"])
-async def root():
+# 健康检查（根路径 "/" 留给下方的前端静态页面）
+@app.get("/health", tags=["健康检查"])
+async def health():
     return {
         "status": "running",
         "service": "Ollama RAG 问答系统",
@@ -43,6 +47,12 @@ async def startup_event():
     print(f"服务地址: http://localhost:8000")
     print(f"API 文档: http://localhost:8000/docs")
     print("=" * 60)
+
+# 生产模式：若前端已构建（frontend/dist 存在），挂载静态页面到根路径
+# API 路由（/qa、/documents、/docs）已在上面注册，优先匹配，不会被子页面覆盖
+FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+if FRONTEND_DIST.is_dir():
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="frontend")
 
 # 运行服务
 if __name__ == "__main__":
